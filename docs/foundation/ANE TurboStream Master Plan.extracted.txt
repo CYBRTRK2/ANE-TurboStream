@@ -1,0 +1,623 @@
+===== word/document.xml =====
+ANE-TurboStream
+Master Engineering Plan — Full Project from Scratch
+llama.cpp Foundation → SSD Streaming → TurboQuant → ANE → EvoDistill
+Apple Silicon AI Engineering Team
+April 2026  —  For Hermes / GPT
+Machine
+M4 MacBook Air — Manuel Monteiro
+RAM
+16 GB Unified Memory (shared CPU + GPU + ANE)
+GPU
+10-core Apple GPU  ≈ 10 TFLOPS FP16
+ANE
+16-core Neural Engine  ≈ 38 TOPS / 12 TFLOPS FP16
+Memory Bandwidth
+120 GB/s shared across all compute units
+SSD
+Internal NVMe — usable via pread() for expert streaming
+ANE dispatch overhead
+~0.095 ms per kernel (XPC + IOKit)
+Model
+Qwen3.5-35B-A3B — IQ2_M quant — ~8.75 GB on disk
+Runtime foundation
+llama.cpp (anemll Flash-MoE fork)
+Performance target
+30–40 tok/s decode (slot-bank + TurboQuant + ANE)
+Fine-tuning target
+EvoDistill: gradient-free, ANE forward passes only
+0. Who You Are
+0.1 Your Identity
+You are a member of the Apple Silicon AI Engineering Team. Not a persona. A technical framing that defines your knowledge and reasoning depth. The team you represent built the Neural Engine compiler, the Metal Performance Shaders framework, the CoreML pipeline, and ships production on-device inference across every Apple device. You think at the level of dispatch latency, memory bus contention, kernel launch overhead, and SRAM boundaries. You do not describe things abstractly when you can describe them in nanoseconds, bytes, and TOPS.
+0.2 What You Know at Hardware Level
+Domain
+What You Know
+Apple Neural Engine
+Private runtime: _ANEClient, _ANEInMemoryModel, _ANECompiler, IOSurface dispatch. MIL IR format. CoreML compiler. Kernel launch ~0.095ms on M4. On-chip SRAM ~32 MB. Forward-pass-only in practice: no native autodiff. 38 TOPS on M4.
+M4 Chip
+16 GB unified memory, 120 GB/s bandwidth shared by CPU+GPU+ANE. 10-core GPU. 4+6 CPU cores. NVMe SSD. All compute units compete for same DRAM.
+Metal / MSL
+MTLCommandBuffer, MTLComputeCommandEncoder, MTLBlitCommandEncoder. waitUntilCompleted. simdgroup_matrix for tiled matmul. threadgroup memory for reductions. MPS for static-graph inference.
+llama.cpp
+ggml tensor library. ggml_backend modular dispatch. ggml-metal.m Metal backend. GGUF format. MUL_MAT and MUL_MAT_ID ops. -ngl flag. Flash-MoE slot-bank (anemll fork): sidecar, slot-bank, oracle modes.
+Qwen3.5-35B-A3B
+35B total params, ~3B active per token. 256 experts per MoE layer, top-8 routing. Hidden dim 7168. 48 transformer layers. ~152K vocab. IQ2_M: ~8.75 GB. Dense layers: ~2.5 GB.
+LoRA + ES
+LoRA: adapter matrices A(d×r) and B(r×k) injected as weight deltas. 811K trainable params at r=8, 24 layers. ES antithetic sampling: no backprop, no gradient tape, no activation storage.
+SSD (Apple)
+arXiv 2604.01193. Sample frozen model at T>1, cross-entropy fine-tune, calibrate decode T*. No labels, no reward. 42%→55% on code benchmarks.
+EGGROLL
+@rustane_dev, March 2026. ES+LoRA gradient-free fine-tuning. 811K params. Population 16. 100 steps. 33% val_loss reduction on 30B model. Layer count is the dominant hyperparameter.
+0.3 Non-Negotiable Engineering Rules
+Every single one of these rules applies to every decision, proposal, and benchmark claim. No exceptions.
+Local benchmark truth beats everything. Your opinion, a paper, another agent's output: all subordinate to what the M4 measures.
+Read actual files before forming opinions. No assumed code structure. No hallucinated state.
+One bounded task at a time. Never propose two changes simultaneously.
+Pre-commit rejection criteria before every benchmark run. State which metric must improve, by how much, without regressing which others.
+Rejected experiments stay visible. Never erase failed paths. Negative evidence is as valuable as positive.
+Attribution is mandatory. Every algorithm from an external source is cited by author and date before use.
+Quality gate on every checkpoint without exception: Lisbon + 345 + FizzBuzz.
+No research paper sections until there are working, benchmarked, locally-defended results. The paper comes after the work.
+Agent sessions are non-interactive, packetized, and budgeted. Input ≤160K tokens. Output reserve ≥40K tokens.
+1. Full Project Roadmap
+Six sequential phases. Each phase has a speed target and a gate. No phase begins until the previous phase is benchmarked, quality-gated, and logged.
+Phase
+Name
+Speed Target
+Gate to Unlock Next Phase
+0
+Foundation
+7–10 tok/s
+llama.cpp stock baseline benchmarked + quality gate passes
+1
+SSD Streaming
+15–25 tok/s
+Slot-bank 32 benchmarked, oracle ceiling measured, quality gate passes
+2
+TurboQuant KV
+18–28 tok/s
+KV compression active, perplexity delta <3%, quality gate passes
+3
+GPU Optimizations
+22–32 tok/s
+cmd1/cmd2 wait reduced, LM-head improved or documented as ceiling
+4
+ANE Integration
+30–40 tok/s
+ANE utilization >0% in Activity Monitor, tok/s improved, quality gate passes
+5
+EvoDistill
+Better model quality
+pass@1 on LiveCodeBench V6 exceeds frozen baseline by >5 pp
+Speed targets are estimates based on the anemll Flash-MoE README benchmarks (6.26 tok/s baseline on M2 Air), TurboQuant paper memory reduction, and ANE TFLOPS advantage. They must be verified by local runs. Do not treat them as guaranteed.
+2. Quality Gate — Runs Before and After Every Change
+These three checks run automatically via quality_gate.py before and after every phase. If any check fails, stop immediately. Do not proceed. Do not promote the checkpoint.
+Check
+Prompt
+Expected Output
+Failure Meaning
+Factual
+"The capital of Portugal is"
+Contains 'Lisbon'
+Model is broken. Do not proceed.
+Arithmetic
+"What is 230 + 115?"
+Contains '345'
+Model is broken. Do not proceed.
+Code
+"Write FizzBuzz in Python for 1 to 20"
+Valid Python with Fizz/Buzz/FizzBuzz
+LoRA injection or quantization corrupted output format.
+These three checks are the minimum bar. They do not measure performance or quality improvement. They only verify the model is not broken. Passing the quality gate is necessary but not sufficient for accepting a change.
+PHASE 0  llama.cpp Foundation — Stock Baseline
+Target: 7–10 tok/s  —  The reference everything is measured against
+0A1628
+Goal
+Build the anemll Flash-MoE llama.cpp fork from source on the M4 Air. Run Qwen3.5-35B-A3B IQ2_M in stock mode (all weights in RAM, no slot-bank, pure GPU). Establish the clean benchmarked baseline. Every future phase improvement is measured relative to this number.
+Why llama.cpp and Not the Old infer.m
+The previous project used a custom Objective-C/Metal runtime (infer.m). That work is archived. The architectural decision to switch to llama.cpp is based on three things: (1) the Flash-MoE slot-bank for SSD streaming is already production-grade in the anemll fork and would take weeks to rebuild in infer.m from scratch; (2) llama.cpp's ggml_backend system is the correct foundation for adding an ANE backend later via ggml-coreml or ggml-ane; (3) GGUF model support means Qwen3.5, Kimi K2, Cascade-2, and any future model works without custom loaders. The infer.m benchmark evidence remains in the project folder as historical reference for timing measurements.
+Step 0.1 — Clone and Build
+git clone https://github.com/Anemll/anemll-flash-llama.cpp.git
+cd anemll-flash-llama.cpp
+cmake -S . -B build \
+-DGGML_METAL=ON \
+-DCMAKE_BUILD_TYPE=Release \
+-DLLAMA_FLASH_MOE_GPU_BANK=ON
+cmake --build build --config Release -j$(sysctl -n hw.ncpu) \
+--target llama-cli llama-bench llama-perplexity
+Step 0.2 — Verify Model File
+# Check model exists
+ls -lh /path/to/Qwen3.5-35B-A3B-IQ2_M.gguf
+# If missing, download from HuggingFace:
+huggingface-cli download bartowski/Qwen3.5-35B-A3B-GGUF \
+--include 'Qwen3.5-35B-A3B-IQ2_M.gguf' --local-dir ./models/
+Step 0.3 — Run Stock Baseline
+./build/bin/llama-bench \
+-m /path/to/Qwen3.5-35B-A3B-IQ2_M.gguf \
+-ngl 99 \
+--moe-mode stock \
+-p 512 -n 128 -r 3
+Reference: the anemll project showed a stock run on an M2 Air 24 GB getting 6.26 tok/s with GPU at 66% and ANE at 0%. On M4 Air 16 GB expect 7-10 tok/s. This is your baseline number.
+Step 0.4 — Benchmark Runs to Log
+Run Tag
+Command
+Purpose
+p0_stock_baseline
+--moe-mode stock -ngl 99 + llama-bench
+Primary speed baseline
+p0_stock_quality
+--moe-mode stock + quality gate prompts
+Verify Lisbon + 345 + FizzBuzz
+p0_stock_perplexity
+--moe-mode stock + llama-perplexity
+Baseline perplexity (mandatory reference for Phase 2 TurboQuant check)
+p0_mactop_snapshot
+--moe-mode stock + mactop running
+Capture GPU% and ANE% = 0% screenshot. This is your 'before' picture.
+Phase 0 Gate
+All four runs logged under runs/backend/
+p0_stock_perplexity number recorded. This is mandatory. Phase 2 TurboQuant perplexity check is relative to this.
+Quality gate passes
+mactop screenshot saved. ANE shows 0.00%. GPU shows >50%. This is your 'before' picture.
+PHASE 1  SSD Streaming — Flash-MoE Slot-Bank
+Target: 15–25 tok/s
+The primary performance lever on 16 GB
+Goal
+Activate the Flash-MoE slot-bank. Routed expert weights move to SSD. Only N=32 resident expert slots stay in GPU memory per MoE layer. Dense weights (attention, norms, embedding, shared experts, LM-head) stay in GPU memory via -ngl 99. The slot-bank hit path (expert already resident) is fast. The miss path (pread from SSD + evict victim slot) is the I/O cost to minimize.
+Why This Is the Primary Lever
+Qwen3.5-35B at IQ2_M: routed expert weights make up ~90% of total model size. In stock mode, all 256 experts per layer are loaded into the 16 GB unified memory pool simultaneously. The slot-bank keeps only 32 of 256 experts resident (~1.1 GB overhead) and streams the rest from SSD on demand. This frees ~6 GB of RAM that was previously occupied by cold experts, reducing memory pressure on the GPU and improving throughput.
+Step 1.1 — Sidecar Extraction
+Extract routed expert weights from the GGUF into per-layer binary sidecar files on disk. These files never load into RAM. The slot-bank pread()s from them on miss.
+# Read the sidecar tool documentation first
+cat references/anemll-flash-llama.cpp-master/tools/flashmoe-sidecar/README.md
+# Extract sidecar
+python tools/flashmoe-sidecar/extract_sidecar.py \
+--gguf /path/to/Qwen3.5-35B-A3B-IQ2_M.gguf \
+--output /path/to/qwen35b_iq2m_sidecar/
+The sidecar extraction produces one binary file per expert per layer. Total sidecar size approximately equals the routed expert portion of the GGUF (~6-7 GB). Store on the internal NVMe for maximum pread() throughput.
+Step 1.2 — Slot-Bank Size for 16 GB
+Slot Count
+Slot-Bank Memory
+Recommendation
+8
+0.3 GiB
+8 GB machines only. Too small for M4 Air.
+32
+1.1 GiB
+16 GB — use this. Best hit rate within memory budget.
+64
+2.2 GiB
+32-64 GB machines.
+128
+4.5 GiB
+64+ GB. Diminishing returns above this.
+Source: anemll Flash-MoE README table for Qwen3.5-35B-A3B (256 experts/layer, ~920 KB per expert slot).
+Step 1.3 — Run Slot-Bank
+./build/bin/llama-cli \
+-m /path/to/Qwen3.5-35B-A3B-IQ2_M.gguf \
+--moe-sidecar /path/to/qwen35b_iq2m_sidecar/ \
+--moe-mode slot-bank \
+--moe-slot-bank 32 \
+--moe-prefetch-temporal \
+-ngl 99 \
+-p "The capital of Portugal is" -n 50
+Step 1.4 — Oracle Ceiling Measurement
+The oracle-all-hit mode simulates perfect cache behavior: every expert requested is already in the slot-bank, zero SSD reads. This gives you the hard speed ceiling for the current slot-bank size. The gap between your slot-bank result and the oracle ceiling tells you how much is lost to cache misses.
+./build/bin/llama-bench \
+-m /path/to/Qwen3.5-35B-A3B-IQ2_M.gguf \
+--moe-sidecar /path/to/sidecar/ \
+--moe-mode oracle-all-hit \
+-ngl 99 -p 512 -n 128 -r 3
+Step 1.5 — Bank Modeling (Cache Policy Optimization)
+Measure expert access patterns during real inference. Use the bank modeling tools from the anemll fork to find the optimal eviction policy and slot count for your workload.
+# Capture expert access trace
+./build/bin/llama-cli \
+--moe-mode slot-bank --moe-slot-bank 32 \
+--moe-trace /path/to/expert_trace.bin \
+-p "[long generation prompt]" -n 512
+# Model the bank with the trace
+python tools/flashmoe-sidecar/bank_model.py \
+--trace /path/to/expert_trace.bin \
+--slot-count 32 --policy lru
+Read docs/moe-bank-modeling-workflow.md in the anemll repo before running this. The bank model output tells you the theoretical hit rate. If hit rate < 70%, consider increasing slot count to 48 or 64 if memory allows.
+Phase 1 Benchmark Runs
+Run Tag
+Flags
+Purpose
+p1_slotbank32
+--moe-mode slot-bank --moe-slot-bank 32 -ngl 99
+Primary slot-bank speed
+p1_slotbank32_quality
+Same + quality prompts
+Quality gate
+p1_oracle_ceiling
+--moe-mode oracle-all-hit -ngl 99
+Hard speed ceiling
+p1_oracle_prefetch
+--moe-mode oracle-prefetch -ngl 99
+One-step prefetch ceiling
+p1_slotbank16_alt
+--moe-mode slot-bank --moe-slot-bank 16 -ngl 99
+Compare lower slot count
+p1_perplexity
+slot-bank 32 + llama-perplexity
+Perplexity vs Phase 0
+p1_mactop
+slot-bank 32 + mactop
+Verify GPU% changed, ANE still 0%
+Phase 1 Rejection Criteria
+slot-bank 32 tok/s must exceed Phase 0 stock baseline by at least 20%. If not: SSD bandwidth is the bottleneck. Investigate pread() throughput before Phase 2.
+Perplexity must not increase more than 1% vs Phase 0 p0_stock_perplexity. If it does: sidecar extraction is corrupted. Re-extract.
+Quality gate must pass.
+If oracle ceiling < 18 tok/s: the SSD bandwidth is the hard limit on this machine. Phase 2 TurboQuant becomes even more critical (reduces I/O pressure).
+PHASE 2  TurboQuant KV Cache Compression
+Target: 18–28 tok/s
+Smaller KV = faster attention = longer context
+Goal
+Compress the KV cache approximately 3.5x using TurboQuant (arXiv 2504.19874, Google DeepMind). Smaller KV cache reduces attention memory pressure, enables longer context windows within 16 GB, and indirectly reduces cmd1_wait (the GPU wait after the attention command buffer). This is the highest-leverage algorithmic change available without touching the model weights.
+The Algorithm — Credit: Google DeepMind, arXiv 2504.19874
+Before implementing anything, read the paper. The SwiftLM reference implementation is at references/SwiftLM-main/Sources/SwiftLM/Server.swift and references/SwiftLM-main/Sources/MLXInferenceCore/InferenceEngine.swift. Port the math to MSL (Metal Shading Language). Do not copy Swift code.
+K-cache compression: 4.25 bits/dim
+Step 1: Extract L2 norm, normalize: x_hat = x / ||x||
+Step 2: Apply Fast Walsh-Hadamard Transform (WHT) in-place. Distributes outliers evenly across dimensions before quantization.
+Step 3: Quantize each coordinate using 3-bit non-linear Lloyd-Max centroids (8 centroids, optimized for Gaussian distribution post-WHT rotation). Read paper Section 3.2 for exact centroid values.
+Step 4: Compute residual: r = x_hat - dequant(quantized)
+Step 5: Project residual via random Johnson-Lindenstrauss (QJL) matrix, store 1-bit sign. QJL acts as inner-product regularizer. Prevents centroid resolution loss from degrading attention dot-product scoring.
+V-cache compression: 3.125 bits/dim
+Steps 1-3 identical to K-cache.
+Step 4: Stop. No QJL for V-cache. V-cache is used for weighted accumulation, not inner-product scoring. QJL provides zero benefit and wastes bits.
+Do not use approximate centroid values from memory. Read Section 3.2 of arXiv 2504.19874 for the exact Lloyd-Max centroid table before writing the shader.
+Implementation Surface in llama.cpp
+New Component
+File Location
+What It Does
+turbo_kv_k.metal
+ggml/src/ggml-metal/
+WHT + 3-bit Lloyd-Max + QJL encode kernel for K-cache
+turbo_kv_v.metal
+ggml/src/ggml-metal/
+WHT + 3-bit Lloyd-Max encode kernel for V-cache (no QJL)
+turbo_kv_decode.metal
+ggml/src/ggml-metal/
+Decode kernel for attention computation on compressed K/V
+Compressed KV buffers
+ggml-metal.m buffer management
+New MTLBuffer per layer: kv_k_compressed, kv_v_compressed
+--turbo-kv flag
+common/arg.cpp
+Gates the compression path. Off by default.
+Phase 2 Benchmark Runs
+Run Tag
+Flags
+Purpose
+p2_turbokv_baseline
+--turbo-kv --moe-slot-bank 32 -ngl 99
+Primary TurboQuant + slot-bank result
+p2_turbokv_quality
+Same + quality prompts
+Quality gate
+p2_turbokv_perplexity
+Same + llama-perplexity
+Perplexity delta vs p0_stock_perplexity
+p2_turbokv_longctx
+--turbo-kv --ctx-size 8192
+Verify longer context fits in 16 GB
+p2_turbokv_konly
+--turbo-kv-k-only
+Isolate K-cache contribution
+Phase 2 Rejection Criteria
+Perplexity must not increase more than 3% vs p0_stock_perplexity. If it does: centroid table or WHT implementation is wrong.
+tok/s must improve vs Phase 1 slot-bank baseline. TurboQuant reduces memory pressure. If tok/s drops, the encode kernel overhead exceeds the memory savings.
+Quality gate must pass.
+If --ctx-size 8192 causes an OOM: TurboQuant savings are not large enough. Check compressed buffer sizes.
+PHASE 3  GPU Optimizations — Reduce Waits and LM-Head
+Target: 22–32 tok/s
+Squeeze remaining GPU performance before ANE
+Goal
+Attack the remaining per-token GPU wait time. After Phase 2, the dominant bottlenecks will be cmd1_wait (GPU wait after attention command buffer), cmd2_wait (GPU wait after MoE command buffer), and lm_head (full vocabulary projection at each decode step). This phase squeezes them before adding the complexity of ANE dispatch.
+Step 3.1 — Instrument the Timing
+Add per-phase timing instrumentation to the llama.cpp Metal backend, mirroring what was done in infer.m. Split cmd1_wait from cmd1_flush and cmd2_wait from cmd2_flush. This is how you find the real bottleneck rather than guessing.
+// In ggml-metal.m, around waitUntilCompleted calls:
+NSDate* t0 = [NSDate date];
+[cmd_buf_1 waitUntilCompleted];
+double cmd1_wait_ms = -[t0 timeIntervalSinceNow] * 1000.0;
+Step 3.2 — cmd1_wait Reduction
+cmd1_wait is the CPU blocking on the attention command buffer. The question: does top-K expert routing start after full cmd1 completion, or is there overlap potential? Read the ggml-metal.m source and find every waitUntilCompleted call. Map the data dependency chain. If gate logit readback is inside cmd1's render pass, the wait is unavoidable. If not, there may be overlap.
+What to look for in ggml-metal.m
+Where is the gate projection matmul encoded?
+Where does the CPU read back the gate logits for top-K selection?
+Is the readback inside cmd1 or cmd2?
+Is there a dependency between cmd1 output and cmd2 input that forces the full wait?
+Do not propose moving waitUntilCompleted without tracing the full data dependency chain. Moving a wait that is actually required will produce incorrect output. The quality gate will catch it if it does.
+Step 3.3 — LM-Head Optimization
+The LM-head at decode time is a matrix-vector multiply: hidden_dim (7168) by vocab (152K). This is memory-bandwidth-bound at batch size 1. Two approaches worth investigating:
+Chunked parallel dispatch: split the vocab projection across multiple compute encoders dispatched simultaneously to different GPU cores. Check if ggml-metal.m already does this.
+Top-P early exit: compute logits in sorted chunks, stop once the cumulative probability mass exceeds the top-P threshold. Avoids computing the full 152K logits when only the top-1000 matter.
+The two previously rejected LM-head approaches (--gguf-lm-head and --nax) are documented in the execution history. Do not re-propose them. Read the rejected.txt files in the old runs/backend/ directories before designing any new LM-head approach.
+Phase 3 Benchmark Runs
+Run Tag
+Purpose
+p3_timing_instrumented
+Establish precise per-phase timing breakdown with new instrumentation
+p3_cmd1_overlap_probe
+Test cmd1/cmd2 overlap if dependency analysis says it is safe
+p3_lmhead_chunked
+Test chunked parallel LM-head dispatch
+p3_lmhead_topp_exit
+Test top-P early exit on vocabulary projection
+p3_combined_best
+Best cmd1+lm_head combination with quality gate
+Phase 3 Rejection Criteria
+Any change that causes quality gate to fail: immediate rejection.
+Any change where the targeted phase (cmd1_wait or lm_head) does not improve: reject the specific change, try the other approach.
+If neither cmd1 nor lm_head can be improved: document the ceiling and move to Phase 4. Phase 3 is important but not a blocker for Phase 4.
+PHASE 4  ANE Integration — Activate the Neural Engine
+Target: 30–40 tok/s
+The layer no existing LLM engine uses
+Goal
+Route eligible FP16 static projection operations off the GPU and onto the ANE. The ANE delivers 38 TOPS at 6.6 TFLOPS/watt. Every other LLM engine on Apple Silicon (llama.cpp stock, MLX, Ollama) shows ANE at 0% during inference. Phase 4 changes that. The visual proof is a mactop screenshot showing ANE power draw > 0 W during generation.
+Why Phase 4 Comes After Phase 1-3, Not Before
+Three reasons this order is non-negotiable:
+IQ2_M weight constraint: the ANE cannot execute 2-bit weight operations natively. CPU dequantization to FP16 before ANE dispatch costs more than the ANE compute gain. This is why the original ANE probe ran slower. The Phase 1 slot-bank is what enables FP16 dense layers while keeping expert weights at IQ2_M on SSD.
+Memory headroom: ANE staging buffers need free memory. Phase 1+2 together free approximately 4 GB (slot-bank frees expert RAM, TurboQuant compresses KV). Without this headroom, ANE buffers would OOM.
+Clean baseline: Phase 3 instruments every GPU phase precisely. Without that instrumentation, you cannot measure whether ANE dispatch is actually helping or hurting.
+The ANE Dispatch Rule
+ANE dispatch is only worth attempting when ALL THREE conditions are true. Check all three before proposing any ANE offload.
+Condition
+Check
+If False
+1. FP16 or INT8 weights
+Dense layer weights must be FP16 or Q8. Slot-bank enables this for dense layers.
+Do NOT dispatch. Use GPU.
+2. Static graph
+Same tensor shapes and op sequence every call. No dynamic expert routing.
+Do NOT dispatch. Use GPU.
+3. GPU time > 0.285ms
+Measured GPU time for this op must exceed 3 x 0.095ms dispatch overhead.
+Do NOT dispatch. Overhead kills the gain.
+Eligible Operations for ANE Dispatch on Qwen3.5-35B
+Operation
+ANE Eligible?
+Notes
+QKV projection (Q+K+V combined)
+YES
+Large FP16 matmul. Static shape. Check GPU time > 0.285ms first.
+Output projection (O)
+YES
+Same as QKV. Static shape.
+Shared expert gate + up + down
+YES
+Always active, same experts every token. Static graph.
+Routed expert matmuls
+NO
+Dynamic expert selection per token. ANE requires static graph.
+LM-head (vocab projection)
+NO
+Memory-bandwidth-bound, not compute-bound. ANE does not help.
+RMSNorm at single-token decode
+NO
+Tensor too small. Dispatch overhead not amortized.
+Top-K routing (CPU side)
+NO
+Trivial. CPU Accelerate is correct here.
+Implementation Path: CoreML Backend for llama.cpp
+There are two paths to ANE dispatch. Start with Path A. Move to Path B only if Path A proves insufficient.
+Path A: CoreML (ggml-coreml.m) — Recommended First
+Compile the eligible ops (QKV, O, shared experts) as a CoreML MLModel at model load time.
+At inference, dispatch via MLModel API. CoreML automatically routes eligible FP16 matmuls to the ANE.
+No private API access. Works with App Store if ever needed.
+Limitation: you do not control which hardware unit CoreML uses. It decides based on op size.
+Path B: Private ANE APIs (_ANEClient) — If Path A Is Insufficient
+Use the reverse-engineered private APIs from maderix/ane (referenced in docs/ane_lane2_notes.md).
+Compile MIL kernels via _ANECompiler, dispatch via _ANEClient + IOSurface buffers.
+Full control. ANE utilization visible in mactop as hard evidence.
+Risk: private APIs may break on macOS updates.
+Path B is what the maderix/ane project documented. The ane_lane2_notes.md file in the project explains what the original probe attempted. The difference in Phase 4: we are dispatching FP16 dense-layer ops (post slot-bank), not IQ2_M ops. That is what was wrong with the original probe.
+ggml-coreml.m Structure
+// New file: ggml/src/ggml-coreml.m
+// At model load:
+// 1. Detect which ggml ops are eligible (FP16 MUL_MAT, static shape)
+// 2. Compile them as CoreML MLModel via MIL
+// 3. Cache the compiled models keyed by tensor shape
+// At compute (ggml_backend_coreml_graph_compute):
+// For each node in the graph:
+//   if node is FP16 MUL_MAT AND shape matches compiled model:
+//     dispatch via MLModel (-> ANE)
+//   else:
+//     fall through to Metal backend (-> GPU)
+Phase 4 Benchmark Runs
+Run Tag
+Configuration
+Purpose
+p4_coreml_qkv
+ANE dispatch QKV only, everything else GPU
+Isolate QKV ANE gain. First ANE run.
+p4_coreml_qkvo
+QKV + O projection on ANE
+Add output projection
+p4_coreml_shared
+Shared expert projections on ANE
+Shared expert ANE gain
+p4_coreml_full
+All eligible dense ops on ANE
+Full Phase 4 target configuration
+p4_coreml_quality
+Full ANE + quality prompts
+Quality gate
+p4_mactop_proof
+Full ANE + mactop running
+Visual proof: ANE% > 0. Screenshot this.
+Phase 4 Rejection Criteria
+If mactop still shows ANE at 0% during inference: the CoreML dispatch is not reaching ANE hardware. Debug the MIL compile step. Do not claim ANE activation without this proof.
+If tok/s does not improve vs Phase 3 best: measure GPU time for QKV. If < 0.285ms, the dispatch overhead is killing the gain. Try larger batch sizes or skip that op.
+Quality gate must pass.
+Perplexity must not degrade vs Phase 0 reference. FP16 ANE ops are higher precision than IQ2_M GPU ops. If perplexity degrades, the CoreML graph is incorrect.
+When Phase 4 passes: mactop shows ANE > 0% during inference. Every other LLM engine on Apple Silicon shows 0%. This screenshot is the proof the project works. Save it. It goes in the README when results are ready.
+PHASE 5  EvoDistill — Gradient-Free On-Device Fine-Tuning
+Target: Better model quality on same hardware
+No GPU cluster. No backward pass. ANE forward passes only.
+Goal
+Fine-tune the model to produce better outputs on code generation tasks, running entirely on the M4 Air using the ANE for forward passes. Zero backward passes. Zero GPU cluster. Zero external annotation. Uses Apple's SSD method (arXiv 2604.01193) as the training signal and EGGROLL (@rustane_dev, March 2026) as the gradient-free optimizer.
+Phase 5 is independent of Phases 1-4 for the training pipeline. But the final fine-tuned model must be deployable on the Phase 1-4 inference stack. Do not begin Phase 5 until Phase 1 (slot-bank) is working and quality-gated. The fine-tuned model needs a working inference engine to serve it.
+The Three Source Works
+Work
+Authors
+Date
+What It Provides
+SSD (Simple Self-Distillation)
+Zhang, Bai, Zheng, Jaitly, Collobert, Zhang (Apple Research)
+April 2026 (arXiv 2604.01193)
+Training signal: sample frozen model at T>1, fine-tune on raw outputs, calibrate decode T*. No labels. No reward. 42%→55% on code benchmarks.
+EGGROLL
+@rustane_dev (Rustane project)
+March 2026
+Optimizer: Evolution Strategies + LoRA. No backprop. 811K trainable params. Population 16, antithetic pairs. 33% val_loss reduction on 30B model.
+ml-ssd (Apple GitHub)
+Apple Research
+April 3, 2026
+Evaluation: LiveCodeBench V6 harness (benchmark.py, eval.py). pass@k metrics. Already cloned at references/ml-ssd-main/.
+The EvoDistill Fusion
+EvoDistill replaces SSD's Stage 2 (the only backward pass in the original pipeline) with EGGROLL's ES optimizer. The substitution is valid because ES minimizes any loss function using only forward pass evaluations. Result: the entire pipeline runs via forward passes. The ANE handles all of them.
+Stage
+From
+What Happens
+Backward Pass?
+1: Corpus Generation
+SSD
+Sample N outputs per prompt from frozen model at T_train > 1.0. No filtering. No verification. Keep everything.
+No
+2: ES Optimization
+EGGROLL
+Update LoRA adapters via fitness-weighted antithetic ES on SSD corpus cross-entropy loss.
+No
+3: Temperature Calibration
+SSD
+Sweep decode temperature T* on held-out val set. Training T and inference T are distinct.
+No
+4: Iterative Refresh
+EvoDistill (new)
+Feed improved model back into Stage 1 for next round. Corpus adapts to improving capability.
+No
+Phase 5 Implementation Steps
+E0: Infrastructure Setup (Do First)
+pip install mlx mlx-lm torch transformers tqdm scipy numpy --break-system-packages
+cd references/ml-ssd-main && pip install -e '.[evaluation]' --break-system-packages
+mkdir -p evodistill/{corpus,adapters,runs,logs}
+touch evodistill/{corpus_gen,es_optimizer,temp_calibrate,pipeline,lora,quality_gate,eval}.py
+touch evodistill/config.yaml
+E0 Gate: Frozen baseline
+Run quality_gate.py against frozen Qwen3.5-35B. All three checks pass.
+Run LiveCodeBench V6 eval on frozen model. Log pass@1 to evodistill/runs/baseline_frozen.json. This is your reference.
+E1: Corpus Generation (Stage 1)
+# core logic in corpus_gen.py
+def generate_corpus(model, prompts, T_train=0.9, N=10, out_path):
+for prompt in tqdm(prompts):                   # LiveCodeBench V6 problems
+for _ in range(N):
+output = model.generate(prompt, temperature=T_train)
+append_jsonl(out_path, {prompt, output, T_train})
+Configuration: M=500 prompts, N=10 samples = 5000 forward passes. Run overnight. Approximately 45 minutes on M4 Air.
+E2: ES Optimizer (Stage 2, EGGROLL algorithm, credit: @rustane_dev)
+def es_step(theta, corpus, model, sigma=0.01, P=16, alpha=0.01):
+grad_est = zeros_like(theta)
+for k in range(P // 2):
+eps = randn_like(theta) * sigma
+F_pos = -cross_entropy(inject_lora(model, theta + eps), batch(corpus))
+F_neg = -cross_entropy(inject_lora(model, theta - eps), batch(corpus))
+grad_est += (F_pos - F_neg) * eps
+return theta + (alpha / (P * sigma)) * grad_est
+Target layers: deeper 24 of 48 (EGGROLL's key empirical finding). Run for S=200 steps. Log val_loss every 10 steps.
+E3: Temperature Calibration (Stage 3, SSD protocol)
+for T in [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+loss = eval_val_loss(model_with_lora, val_set, temperature=T)
+log({'T': T, 'val_loss': loss})
+T_star = T with minimum val_loss
+E4: Iterative Loop (Stage 4, EvoDistill)
+for round_k in range(1, K+1):       # K=3 rounds
+corpus = generate_corpus(current_model, prompts, T_train)  # Stage 1
+theta  = es_optimize(theta, corpus, current_model, S=200)   # Stage 2
+T_star = calibrate_temperature(current_model, theta, val)   # Stage 3
+run_quality_gate()               # must pass before advancing
+current_model = merge_lora(current_model, theta)            # advance
+E5: LiveCodeBench V6 Final Evaluation
+python references/ml-ssd-main/evaluation/eval.py \
+--model evodistill/adapters/final_merged/ \
+--max_tokens 32768 --n_repeat 10 \
+--sampling_params "temperature=T_STAR,top_p=0.8,top_k=20"
+Phase 5 Hyperparameter Sweep Order
+Sweep in this order. Do not sweep all simultaneously. EGGROLL's finding: layer count dominates everything.
+Order
+Parameter
+Values
+Why This Order
+1 (first)
+Target layer count
+12, 24, 36 of 48
+Dominates all other hyperparameters per EGGROLL
+2
+Corpus temperature T_train
+0.7, 0.9, 1.1
+SSD: find the diversity sweet spot
+3
+ES steps S
+100, 200, 400
+Confirm convergence curve
+4
+Population P
+8, 16, 32
+Barely matters per EGGROLL. Confirm.
+5
+Sigma
+0.005, 0.01, 0.05
+Only if ES stalls
+6 (last)
+Rounds K
+1, 2, 3
+After best config from 1-5 is found
+Phase 5 Rejection Criteria
+val_loss at step 200 does not improve over step 0 by at least 5%: sigma or layer selection is wrong. Fix before continuing.
+T* == T_train exactly: something is wrong with val set or calibration sweep. Investigate.
+Round K val_loss >= round K-1: stop the loop at K-1. Do not continue.
+Final LiveCodeBench V6 pass@1 does not exceed frozen baseline by at least 3 pp: EvoDistill does not work on this configuration. Report honestly. Do not promote.
+Quality gate fails at any checkpoint: stop immediately.
+First Steps for the Agent in This Session
+Execute in order. Do not skip. Do not propose code changes until Step 7 is complete.
+Read full_execution_history_20260403.md in full. Know what the previous infer.m work did, accepted, and rejected. Never repeat what failed.
+Read references/anemll-flash-llama.cpp-master/README.md, tools/flashmoe-sidecar/README.md, and docs/moe-bank-modeling-workflow.md. Understand the slot-bank architecture before touching Phase 1.
+Read references/ml-ssd-main/README.md, evaluation/benchmark.py, and evaluation/eval.py. Understand LiveCodeBench V6 before touching Phase 5.
+Read references/SwiftLM-main/Sources/SwiftLM/Server.swift (KV cache and TurboQuant sections). Extract the algorithm. Do not copy Swift code.
+Read docs/ane_lane2_notes.md. Understand exactly why the original ANE probe ran slower. This is the constraint that defines Phase 4.
+Check if Qwen3.5-35B-A3B-IQ2_M.gguf is already downloaded. Report the path. If missing, report and propose the download command.
+Check if anemll-flash-llama.cpp is already built in the project folder. If yes: report the binary paths. If no: build it now per Phase 0 Step 0.1.
+Run Phase 0 stock baseline benchmark. Log to runs/backend/p0_stock_baseline.json. Report the tok/s number. This is the first real measurement.
+Only after Step 8 is complete and the baseline number is in hand should you propose Phase 1 implementation.
+Summary: The Full Stack
+Phase
+What Gets Built
+Speed Gain
+Key File / Tool
+0: Foundation
+llama.cpp (anemll Flash-MoE fork) stock baseline
+7–10 tok/s reference
+llama-bench, llama-perplexity
+1: SSD Streaming
+Flash-MoE slot-bank 32, sidecar extraction, cache policy
+15–25 tok/s
+flashmoe-sidecar/extract_sidecar.py
+2: TurboQuant KV
+Compressed KV cache (3.5x), longer context
+18–28 tok/s
+turbo_kv_k.metal, turbo_kv_v.metal
+3: GPU Opts
+cmd1/cmd2 wait reduction, LM-head improvement
+22–32 tok/s
+ggml-metal.m timing + new kernels
+4: ANE
+CoreML dispatch for FP16 dense ops, ANE > 0%
+30–40 tok/s
+ggml-coreml.m
+5: EvoDistill
+Gradient-free fine-tuning via SSD + EGGROLL
+Better quality
+evodistill/pipeline.py
+ANE-TurboStream Master Plan  —  Apple Silicon AI Engineering Team  —  April 2026
+SSD © Apple Research (arXiv 2604.01193)  |  EGGROLL © @rustane_dev (Rustane, March 2026)  |  Flash-MoE © anemll

@@ -1,0 +1,13 @@
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.log
+.DS_Store
+results/
+benchmarks/output/
+vendor/anemll-flash-llama.cpp/build/
+vendor/anemll-flash-llama.cpp/build-*/
+vendor/anemll-flash-llama.cpp/flashmoe-results/
+vendor/anemll-flash-llama.cpp/.cache/
