@@ -65,7 +65,18 @@ def run_bench(h):
     """Run llama-bench with hypothesis h, return (tg128, pp512) or (None, None) on fail."""
     cmd = [BENCH, "-m", MODEL, "--output", "json"]
     for k, v in h.items():
-        flag = f"--{k.replace('_', '-')}"
+        flag_map = {
+            "moe_topk": "--moe-topk",
+            "threads": "-t",
+            "ubatch": "--ubatch-size",
+            "batch": "--batch-size",
+            "moe_mode": "--moe-mode",
+            "cpu_strict": "--cpu-strict",
+            "poll": "--poll",
+            "fa": "--flash-attn",
+            "no_kv_offload": "--no-kv-offload",
+        }
+        flag = flag_map.get(k, f"--{k.replace('_', '-')}")
         if isinstance(v, bool):
             if v:
                 cmd.append(flag)
@@ -75,17 +86,23 @@ def run_bench(h):
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         out = proc.stdout
         # Parse JSON output from llama-bench
-        lines = [l for l in out.splitlines() if l.strip().startswith("[")]
-        if not lines:
+        lines = out.splitlines()
+        json_start = None
+        for i, l in enumerate(lines):
+            if l.strip().startswith("["):
+                json_start = i
+                break
+        if json_start is None:
             return None, None
-        data = json.loads(lines[0])
+        data = json.loads("\n".join(lines[json_start:]))
         tg128 = None
         pp512 = None
         for row in data:
-            if row.get("test") == "tg128":
-                tg128 = row.get("t/s", None)
-            elif row.get("test") == "pp512":
-                pp512 = row.get("t/s", None)
+            if isinstance(row, dict):
+                if row.get("test") == "tg128":
+                    tg128 = row.get("t/s", None)
+                elif row.get("test") == "pp512":
+                    pp512 = row.get("t/s", None)
         return tg128, pp512
     except Exception as e:
         return None, None
