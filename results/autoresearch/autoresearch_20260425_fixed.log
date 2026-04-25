@@ -1,0 +1,68 @@
+[AutoResearch] Starting with 21 hypotheses
+[AutoResearch] Baseline: tg128=26.02 t/s | config={'moe_topk': 4, 'threads': 4, 'ubatch': None, 'batch': None}
+
+[AutoResearch] Hypothesis 1/21: {"moe_topk": 4, "threads": 2}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 2/21: {"moe_topk": 4, "threads": 6}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 3/21: {"moe_topk": 4, "threads": 8}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 4/21: {"moe_topk": 4, "ubatch": 64}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 5/21: {"moe_topk": 4, "ubatch": 96}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 6/21: {"moe_topk": 4, "ubatch": 192}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 7/21: {"moe_topk": 4, "ubatch": 256}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 8/21: {"moe_topk": 4, "batch": 1024}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 9/21: {"moe_topk": 4, "batch": 256}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 10/21: {"moe_topk": 3}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 11/21: {"moe_topk": 5}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 12/21: {"moe_topk": 6}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 13/21: {"moe_mode": "stock"}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 14/21: {"moe_mode": "resident"}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 15/21: {"moe_mode": "slot-bank"}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 16/21: {"cpu_strict": 1}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 17/21: {"cpu_strict": 0, "poll": 0}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 18/21: {"poll": 25}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 19/21: {"poll": 75}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 20/21: {"fa": 1}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 21/21: {"no_kv_offload": 1}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Complete. Best config: {'moe_topk': 4, 'threads': 4, 'ubatch': None, 'batch': None} with 26.02 t/s
+[AutoResearch] Ledger: /Users/manuelmonteiro/Desktop/ANE project/results/autoresearch/ledger.tsv

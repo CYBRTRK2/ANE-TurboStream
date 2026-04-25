@@ -1,0 +1,24 @@
+timestamp	hypothesis_json	tg128_tok_s	pp512_tok_s	action	notes
+2026-04-25 03:26:38	{"moe_topk": 4, "threads": 2}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:27:15	{"moe_topk": 4, "threads": 6}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:32:35	{"moe_topk": 4, "threads": 2}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:33:12	{"moe_topk": 4, "threads": 6}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:33:54	{"moe_topk": 4, "threads": 8}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:34:55	{"moe_topk": 4, "ubatch": 64}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:35:50	{"moe_topk": 4, "ubatch": 96}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:36:38	{"moe_topk": 4, "ubatch": 192}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:37:23	{"moe_topk": 4, "ubatch": 256}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:38:06	{"moe_topk": 4, "batch": 1024}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:38:50	{"moe_topk": 4, "batch": 256}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:38:51	{"moe_topk": 3}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:39:39	{"moe_topk": 5}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:40:28	{"moe_topk": 6}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:41:25	{"moe_mode": "stock"}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:42:21	{"moe_mode": "resident"}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:42:22	{"moe_mode": "slot-bank"}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:43:13	{"cpu_strict": 1}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:44:05	{"cpu_strict": 0, "poll": 0}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:44:57	{"poll": 25}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:45:48	{"poll": 75}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:46:42	{"fa": 1}	None	None	FAIL	bench crashed or timed out
+2026-04-25 03:48:41	{"no_kv_offload": 1}	None	None	FAIL	bench crashed or timed out

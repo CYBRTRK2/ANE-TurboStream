@@ -1,0 +1,10 @@
+[AutoResearch] Starting with 21 hypotheses
+[AutoResearch] Baseline: tg128=26.02 t/s | config={'moe_topk': 4, 'threads': 4, 'ubatch': None, 'batch': None}
+
+[AutoResearch] Hypothesis 1/21: {"moe_topk": 4, "threads": 2}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 2/21: {"moe_topk": 4, "threads": 6}
+  -> FAIL (crash/timeout)
+
+[AutoResearch] Hypothesis 3/21: {"moe_topk": 4, "threads": 8}
