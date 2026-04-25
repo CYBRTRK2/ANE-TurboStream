@@ -43,3 +43,21 @@ Need to check war_room/cpp/ and compare.
 6. Commit session_log.md and key findings to git
 
 ---
+---
+
+## 03:35 — Track 0 Official Baseline
+Agent confirmed operational state:
+- Disk: 50 GiB free (76% used)
+- build-nsg-opt llama-bench: WORKING
+- dflash-cli baseline: 27.60 tok/s
+- dflash-draft acceptance: 0% (model-level blocker, C++ already fixed)
+- llama-cli stock topk=4: 29.0 tok/s
+- llama-bench tg128 stock topk=8: 24.11 +/- 0.19 t/s
+- llama-bench tg128 stock topk=4: running now
+
+# Next actions
+1. Finish Track 0 baseline numbers and commit
+2. Test slot-bank/lookup/lookahead for Track 1 free wins
+3. Investigate build-turbo llama-cli for Track 4 TurboQuant
+4. Begin Track 2 ANE CoreML backend plumbing (long pole)
+
