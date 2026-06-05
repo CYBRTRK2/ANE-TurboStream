@@ -22,3 +22,31 @@ timestamp	hypothesis_json	tg128_tok_s	pp512_tok_s	action	notes
 2026-04-25 03:45:48	{"poll": 75}	None	None	FAIL	bench crashed or timed out
 2026-04-25 03:46:42	{"fa": 1}	None	None	FAIL	bench crashed or timed out
 2026-04-25 03:48:41	{"no_kv_offload": 1}	None	None	FAIL	bench crashed or timed out
+2026-04-26 00:52:03	{"moe_topk": 4, "threads": 2}	23.911144	329.721514	DISCARD	Regression: 23.91 t/s
+2026-04-26 00:52:44	{"moe_topk": 4, "threads": 6}	21.587329	320.551836	DISCARD	Regression: 21.59 t/s
+2026-04-26 00:53:34	{"moe_topk": 4, "threads": 8}	17.722192	248.450875	DISCARD	Regression: 17.72 t/s
+2026-04-27 01:42:51	{"control": {"moe_topk": 4, "threads": 4, "ubatch": 512, "batch": 2048, "moe_mode": "stock"}}	21.791024	272.705169	CONTROL	rc=0; reps=1
+2026-04-27 01:43:04	{"moe_topk": 4, "threads": 2}	21.534325	270.822147	DISCARD	Regression: 21.53 t/s; rc=0; reps=1
+2026-04-27 01:43:17	{"moe_topk": 4, "threads": 6}	21.475925	264.443192	DISCARD	Regression: 21.48 t/s; rc=0; reps=1
+2026-04-27 23:52:17	{"control": {"moe_topk": 4, "threads": 4, "ubatch": 512, "batch": 2048, "moe_mode": "stock"}}	23.273728	277.374527	CONTROL	rc=0; reps=1
+2026-04-27 23:52:31	{"moe_topk": 4, "threads": 2}	24.195363	242.108658	KEEP	NEW BEST: 24.20 t/s; rc=0; reps=1
+2026-04-27 23:52:42	{"moe_topk": 4, "threads": 6}	24.671009	301.427195	KEEP	NEW BEST: 24.67 t/s; rc=0; reps=1
+2026-04-27 23:52:52	{"moe_topk": 4, "threads": 8}	25.402889	300.726354	KEEP	NEW BEST: 25.40 t/s; rc=0; reps=1
+2026-04-27 23:53:05	{"moe_topk": 4, "ubatch": 64}	25.025495	178.615965	DISCARD	Regression: 25.03 t/s; rc=0; reps=1
+2026-04-27 23:53:19	{"moe_topk": 4, "ubatch": 96}	24.154803	183.777823	DISCARD	Regression: 24.15 t/s; rc=0; reps=1
+2026-04-27 23:53:31	{"moe_topk": 4, "ubatch": 192}	24.149073	227.119272	DISCARD	Regression: 24.15 t/s; rc=0; reps=1
+2026-04-27 23:53:43	{"moe_topk": 4, "ubatch": 256}	24.184112	251.307194	DISCARD	Regression: 24.18 t/s; rc=0; reps=1
+2026-04-27 23:53:54	{"moe_topk": 4, "batch": 1024}	24.219112	274.702569	DISCARD	Regression: 24.22 t/s; rc=0; reps=1
+2026-04-27 23:54:05	{"moe_topk": 4, "batch": 256}	24.134158	246.406927	DISCARD	Regression: 24.13 t/s; rc=0; reps=1
+2026-04-27 23:54:07	{"moe_topk": 3}	None	None	FAIL	no JSON; rc=-11; stderr=ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices ggml_metal_library_init: using embedded metal library ggml_metal_library_init: loaded in 0.050 sec ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s) ggml_metal_device_init: GPU name:   MTL0 ggml_
+2026-04-27 23:54:19	{"moe_topk": 5}	23.86917	257.697096	DISCARD	Regression: 23.87 t/s; rc=0; reps=1
+2026-04-27 23:54:30	{"moe_topk": 6}	23.259247	242.187812	DISCARD	Regression: 23.26 t/s; rc=0; reps=1
+2026-04-27 23:54:42	{"moe_mode": "stock"}	22.885819	225.14471	DISCARD	Regression: 22.89 t/s; rc=0; reps=1
+2026-04-27 23:54:54	{"moe_mode": "resident"}	23.2168	241.679393	DISCARD	Regression: 23.22 t/s; rc=0; reps=1
+2026-04-27 23:54:54	{"moe_mode": "slot-bank"}	None	None	FAIL	Expecting value: line 1 column 2 (char 1)
+2026-04-27 23:55:06	{"cpu_strict": 1}	22.445591	214.35872	DISCARD	Regression: 22.45 t/s; rc=0; reps=1
+2026-04-27 23:55:20	{"cpu_strict": 0, "poll": 0}	19.046561	212.234834	DISCARD	Regression: 19.05 t/s; rc=0; reps=1
+2026-04-27 23:55:35	{"poll": 25}	19.519206	223.091365	DISCARD	Regression: 19.52 t/s; rc=0; reps=1
+2026-04-27 23:55:50	{"poll": 75}	18.89775	157.034415	DISCARD	Regression: 18.90 t/s; rc=0; reps=1
+2026-04-27 23:56:04	{"fa": 1}	18.556305	176.236661	DISCARD	Regression: 18.56 t/s; rc=0; reps=1
+2026-04-27 23:56:32	{"no_kv_offload": 1}	9.614065	96.444813	DISCARD	Regression: 9.61 t/s; rc=0; reps=1

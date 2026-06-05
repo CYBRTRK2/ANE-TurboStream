@@ -1,0 +1,583 @@
+// dflash-cli.cpp - DFlash speculative decoding CLI
+// Uses block-diffusion draft model with target Qwen3.5-35B-A3B
+//
+// Usage: dflash-cli -m target.gguf [--dflash-draft draft.gguf] -p "prompt"
+//        dflash-cli -m target.gguf --dflash-ar -md draft.gguf -p "prompt"
+//
+// Modes:
+//   --dflash         DFlash block-diffusion speculative (requires DFlash draft model)
+//   --dflash-ar      Autoregressive speculative with draft model (standard specdec, baseline)
+//   --baseline       No speculative decoding, target model only (baseline comparison)
+
+#include "dflash.h"
+#include "dflash_capture.h"
+#include "llama.h"
+#include "common.h"
+
+#include <cstdio>
+#include <cstring>
+#include <vector>
+#include <string>
+#include <chrono>
+#include <cmath>
+
+// ============================================================================
+// CLI Arguments
+// ============================================================================
+
+struct dflash_cli_args {
+    // Model paths
+    std::string model_path;          // Target model GGUF
+    std::string draft_model_path;    // Draft model GGUF (for --dflash-ar)
+    std::string dflash_draft_path;   // DFlash draft GGUF (for --dflash)
+
+    // Generation params
+    std::string prompt;
+    int32_t n_predict = 128;
+    int32_t n_ctx     = 2048;
+    int32_t n_threads  = 4;
+    int32_t n_gpu_layers = 99;
+    int32_t seed       = 123;
+
+    // DFlash params
+    int32_t block_size = 16;
+    std::string moe_mode = "stock";
+    int32_t moe_topk = 0;  // 0 = use model default; 4 = override to 4 experts
+
+    // Mode
+    enum mode { BASELINE, DFLASH_AR, DFLASH_BLOCK } mode = BASELINE;
+};
+
+static void print_usage(const char * prog) {
+    fprintf(stderr, "Usage: %s [options]\n\n", prog);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -m, --model PATH        Target model GGUF (required)\n");
+    fprintf(stderr, "  -md, --model-draft PATH  Draft model GGUF (for --dflash-ar)\n");
+    fprintf(stderr, "      --dflash-draft PATH  DFlash draft GGUF (for --dflash)\n");
+    fprintf(stderr, "  -p, --prompt TEXT        Prompt text\n");
+    fprintf(stderr, "  -n, --n-predict N        Number of tokens to generate (default: 128)\n");
+    fprintf(stderr, "  -c, --ctx-size N        Context size (default: 2048)\n");
+    fprintf(stderr, "  -ngl N                   GPU layers (default: 99)\n");
+    fprintf(stderr, "  --seed N                 Random seed (default: 123)\n");
+    fprintf(stderr, "  --dflash                 DFlash block-diffusion mode\n");
+    fprintf(stderr, "  --dflash-ar              Standard AR speculative mode\n");
+    fprintf(stderr, "  --baseline               Baseline (no speculative, default)\n");
+    fprintf(stderr, "  --block-size N           DFlash block size (default: 16)\n");
+    fprintf(stderr, "  --moe-mode MODE          MoE mode: stock,slot-bank (default: stock)\n");
+    fprintf(stderr, "  --moe-topk N             Override MoE top-k (0=default, 4=fast)\n");
+}
+
+// ============================================================================
+// Baseline generation (no speculative decoding)
+// ============================================================================
+
+static int run_baseline(dflash_cli_args & args) {
+    // Load target model
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = args.n_gpu_layers;
+    if (args.moe_topk > 0) {
+        model_params.moe_topk_override = args.moe_topk;
+        fprintf(stderr, "[MoE] Overriding topk to %d\n", args.moe_topk);
+    }
+
+    llama_model * model = llama_model_load_from_file(args.model_path.c_str(), model_params);
+    if (!model) {
+        fprintf(stderr, "Failed to load model: %s\n", args.model_path.c_str());
+        return 1;
+    }
+
+    // Create context
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = args.n_ctx;
+    ctx_params.n_threads = args.n_threads;
+    ctx_params.n_threads_batch = args.n_threads;
+
+    llama_context * ctx = llama_init_from_model(model, ctx_params);
+    if (!ctx) {
+        fprintf(stderr, "Failed to create context\n");
+        llama_free_model(model);
+        return 1;
+    }
+
+    // Tokenize prompt
+    const int n_ctx_train = llama_model_n_ctx_train(model);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    auto tokens = common_tokenize(vocab, args.prompt, false, true);
+
+    fprintf(stderr, "Baseline: running %d tokens on target model\n", args.n_predict);
+    fprintf(stderr, "Prompt: %d tokens, generating: %d tokens\n", (int)tokens.size(), args.n_predict);
+
+    // Prefill
+    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+    auto t_start = std::chrono::steady_clock::now();
+
+    if (llama_decode(ctx, batch) != 0) {
+        fprintf(stderr, "Prefill decode failed\n");
+        llama_free(ctx);
+        llama_free_model(model);
+        return 1;
+    }
+
+    // Get first token
+    int32_t vocab_size = llama_vocab_n_tokens(vocab);
+    const float * logits = llama_get_logits_ith(ctx, tokens.size() - 1);
+    llama_token next_token = 0;
+    float max_logit = logits[0];
+    for (int32_t i = 1; i < vocab_size; i++) {
+        if (logits[i] > max_logit) {
+            max_logit = logits[i];
+            next_token = i;
+        }
+    }
+
+    std::vector<llama_token> generated;
+    generated.push_back(next_token);
+
+    // Generate tokens
+    while ((int)generated.size() < args.n_predict) {
+        batch = llama_batch_get_one(&next_token, 1);
+        if (llama_decode(ctx, batch) != 0) {
+            fprintf(stderr, "Decode failed\n");
+            break;
+        }
+
+        logits = llama_get_logits_ith(ctx, 0);
+        next_token = 0;
+        max_logit = logits[0];
+        for (int32_t i = 1; i < vocab_size; i++) {
+            if (logits[i] > max_logit) {
+                max_logit = logits[i];
+                next_token = i;
+            }
+        }
+        generated.push_back(next_token);
+    }
+
+    auto t_end = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(t_end - t_start).count();
+    double tok_per_sec = generated.size() / elapsed;
+
+    // Print results
+    std::string output = common_detokenize(ctx, generated);
+    fprintf(stderr, "\n=== Baseline Results ===\n");
+    fprintf(stderr, "Generated: %ld tokens in %.2fs\n", generated.size(), elapsed);
+    fprintf(stderr, "Speed: %.2f tok/s\n", tok_per_sec);
+    fprintf(stderr, "\nOutput:\n%s\n", output.c_str());
+
+    llama_free(ctx);
+    llama_model_free(model);
+    return 0;
+}
+
+// ============================================================================
+// DFlash generation (block-diffusion speculative decoding)
+// ============================================================================
+
+static int run_dflash(dflash_cli_args & args) {
+    // Load target model
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = args.n_gpu_layers;
+    if (args.moe_topk > 0) {
+        model_params.moe_topk_override = args.moe_topk;
+        fprintf(stderr, "[MoE] Overriding topk to %d\n", args.moe_topk);
+    }
+
+    llama_model * model = llama_model_load_from_file(args.model_path.c_str(), model_params);
+    if (!model) {
+        fprintf(stderr, "Failed to load model: %s\n", args.model_path.c_str());
+        return 1;
+    }
+
+    // Create context with hidden state capture
+    dflash_hidden_capture capture;
+    
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = args.n_ctx;
+    ctx_params.n_threads = args.n_threads;
+    ctx_params.n_threads_batch = args.n_threads;
+    ctx_params.cb_eval = dflash_eval_callback;
+    ctx_params.cb_eval_user_data = &capture;
+
+    llama_context * ctx = llama_init_from_model(model, ctx_params);
+    if (!ctx) {
+        fprintf(stderr, "Failed to create context\n");
+        llama_free_model(model);
+        return 1;
+    }
+
+    // Set up DFlash params
+    dflash_params dparams;
+    dparams.block_size = args.block_size;
+    dparams.n_threads = args.n_threads;
+    dparams.max_ctx = args.n_ctx;
+    dparams.n_gpu_layers = args.n_gpu_layers;
+    dparams.target_layer_ids = {1, 10, 19, 28, 37};  // 5 capture points
+    
+    // Use provided draft path, or fall back to target-as-draft
+    if (!args.dflash_draft_path.empty()) {
+        dparams.draft_model_path = args.dflash_draft_path;
+        dparams.use_target_as_draft = false;
+        fprintf(stderr, "[DFlash] Draft model: %s\n", args.dflash_draft_path.c_str());
+    } else {
+        dparams.use_target_as_draft = true;
+    }
+    // Fallback if someone passes -md instead of --dflash-draft
+    if (dparams.draft_model_path.empty() && !args.draft_model_path.empty()) {
+        dparams.draft_model_path = args.draft_model_path;
+        dparams.use_target_as_draft = false;
+        fprintf(stderr, "[DFlash] Draft model (from -md): %s\n", args.draft_model_path.c_str());
+    }
+
+    // Initialize DFlash context
+    dflash_context * dflash = dflash_init(dparams, model, ctx);
+    if (!dflash) {
+        fprintf(stderr, "Failed to initialize DFlash context\n");
+        llama_free(ctx);
+        llama_model_free(model);
+        return 1;
+    }
+
+    // Tokenize prompt
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    auto tokens = common_tokenize(vocab, args.prompt, false, true);
+
+    fprintf(stderr, "\n=== DFlash Block-Diffusion ===\n");
+    fprintf(stderr, "Block size: %d, Target layers: [1, 10, 19, 28, 37]\n", args.block_size);
+    fprintf(stderr, "Prompt: %d tokens, generating: %d tokens\n", (int)tokens.size(), args.n_predict);
+
+    // Allocate output
+    std::vector<llama_token> generated(args.n_predict);
+    
+    auto t_start = std::chrono::steady_clock::now();
+
+    // Run DFlash generation
+    int32_t n_generated = dflash_generate(dflash, tokens.data(), (int32_t)tokens.size(),
+                                          generated.data(), args.n_predict);
+
+    auto t_end = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(t_end - t_start).count();
+    double tok_per_sec = n_generated / elapsed;
+
+    // Print results
+    std::vector<llama_token> gen_vec(generated.data(), generated.data() + n_generated);
+    std::string output = common_detokenize(ctx, gen_vec);
+    fprintf(stderr, "\n=== DFlash Results ===\n");
+    fprintf(stderr, "Generated: %d tokens in %.2fs\n", n_generated, elapsed);
+    fprintf(stderr, "Speed: %.2f tok/s\n", tok_per_sec);
+    dflash_print_stats(dflash);
+    fprintf(stderr, "\nOutput:\n%s\n", output.c_str());
+
+    // Cleanup
+    dflash_free(dflash);
+    llama_free(ctx);
+    llama_model_free(model);
+    return 0;
+}
+
+// ============================================================================
+// DFlash-AR generation (standard autoregressive speculative decoding)
+// ============================================================================
+
+static int run_dflash_ar(dflash_cli_args & args) {
+    // Load target model
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = args.n_gpu_layers;
+    if (args.moe_topk > 0) {
+        model_params.moe_topk_override = args.moe_topk;
+        fprintf(stderr, "[MoE] Overriding topk to %d\n", args.moe_topk);
+    }
+
+    llama_model * model = llama_model_load_from_file(args.model_path.c_str(), model_params);
+    if (!model) {
+        fprintf(stderr, "Failed to load model: %s\n", args.model_path.c_str());
+        return 1;
+    }
+
+    // Create target context
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = args.n_ctx;
+    ctx_params.n_threads = args.n_threads;
+    ctx_params.n_threads_batch = args.n_threads;
+
+    llama_context * ctx = llama_init_from_model(model, ctx_params);
+    if (!ctx) {
+        fprintf(stderr, "Failed to create target context\n");
+        llama_free_model(model);
+        return 1;
+    }
+
+    // Load draft model if provided
+    llama_model * draft_model = nullptr;
+    llama_context * draft_ctx = nullptr;
+    
+    if (!args.draft_model_path.empty()) {
+        // Load draft model with GPU layers (try to share GPU with target)
+        llama_model_params draft_params = llama_model_default_params();
+        draft_params.n_gpu_layers = args.n_gpu_layers;  // Use same GPU offload as target
+        draft_model = llama_model_load_from_file(args.draft_model_path.c_str(), draft_params);
+        if (draft_model) {
+            draft_ctx = llama_init_from_model(draft_model, ctx_params);
+            fprintf(stderr, "Loaded draft model (CPU): %s\n", args.draft_model_path.c_str());
+        } else {
+            fprintf(stderr, "Warning: failed to load draft model\n");
+        }
+    }
+
+    // Tokenize prompt
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    auto tokens = common_tokenize(vocab, args.prompt, false, true);
+
+    fprintf(stderr, "\n=== DFlash-AR Speculative ===\n");
+    fprintf(stderr, "Draft model: %s\n", draft_model ? args.draft_model_path.c_str() : "none (target-only)");
+    fprintf(stderr, "Prompt: %d tokens, generating: %d tokens\n", (int)tokens.size(), args.n_predict);
+
+    // Prefill target
+    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+    auto t_start = std::chrono::steady_clock::now();
+
+    if (llama_decode(ctx, batch) != 0) {
+        fprintf(stderr, "Target prefill failed\n");
+        llama_free(ctx);
+        llama_model_free(model);
+        return 1;
+    }
+
+    // Get first token
+    int32_t vocab_size = llama_vocab_n_tokens(vocab);
+    const float * logits = llama_get_logits_ith(ctx, tokens.size() - 1);
+    llama_token next_token = 0;
+    float max_logit = logits[0];
+    for (int32_t i = 1; i < vocab_size; i++) {
+        if (logits[i] > max_logit) {
+            max_logit = logits[i];
+            next_token = i;
+        }
+    }
+
+    int n_past = tokens.size();  // Track sequence position for verify batch
+
+    std::vector<llama_token> generated;
+    generated.push_back(next_token);
+    n_past++;  // The first prefill token is now in KV cache
+
+    // Stats
+    int64_t total_draft = 0;
+    int64_t total_accepted = 0;
+
+    // Generate with speculative decoding
+    while ((int)generated.size() < args.n_predict) {
+        // Draft phase
+        std::vector<llama_token> draft_tokens;
+        auto draft_start = std::chrono::steady_clock::now();
+        
+        if (draft_ctx) {
+            // Use draft model to generate candidates
+            llama_token current = next_token;
+            for (int i = 0; i < args.block_size - 1; i++) {
+                llama_batch dbatch = llama_batch_get_one(&current, 1);
+                if (llama_decode(draft_ctx, dbatch) != 0) break;
+                
+                const float * dlogits = llama_get_logits(draft_ctx);
+                current = 0;
+                float best = dlogits[0];
+                for (int32_t j = 1; j < vocab_size; j++) {
+                    if (dlogits[j] > best) {
+                        best = dlogits[j];
+                        current = j;
+                    }
+                }
+                draft_tokens.push_back(current);
+            }
+        }
+        
+        auto draft_time = std::chrono::steady_clock::now() - draft_start;
+        total_draft += draft_tokens.size();
+
+        if (draft_tokens.empty()) {
+            // Can't draft, use target directly with correct position
+            batch = llama_batch_init(1, 0, 1);
+            batch.token[0] = next_token;
+            batch.pos[0] = n_past;
+            batch.n_seq_id[0] = 1;
+            batch.seq_id[0][0] = 0;
+            batch.logits[0] = 1;
+            batch.n_tokens = 1;
+            
+            if (llama_decode(ctx, batch) != 0) {
+                llama_batch_free(batch);
+                break;
+            }
+            llama_batch_free(batch);
+            
+            n_past++;  // Track sequence position
+            
+            logits = llama_get_logits_ith(ctx, 0);
+            next_token = 0;
+            max_logit = logits[0];
+            for (int32_t i = 1; i < vocab_size; i++) {
+                if (logits[i] > max_logit) {
+                    max_logit = logits[i];
+                    next_token = i;
+                }
+            }
+            // Push the newly decoded token
+            generated.push_back(next_token);
+        } else {
+            // Verify phase: build batch with logits enabled for ALL positions
+            std::vector<llama_token> verify_seq = {next_token};
+            verify_seq.insert(verify_seq.end(), draft_tokens.begin(), draft_tokens.end());
+            const int batch_size = verify_seq.size();
+            llama_batch vbatch = llama_batch_init(batch_size, 0, 1);
+            for (int i = 0; i < batch_size; ++i) {
+                vbatch.token[i] = verify_seq[i];
+                vbatch.pos[i] = n_past + i;
+                vbatch.n_seq_id[i] = 1;
+                vbatch.seq_id[i][0] = 0;
+                vbatch.logits[i] = 1;
+            }
+            vbatch.n_tokens = batch_size;
+
+            if (llama_decode(ctx, vbatch) != 0) {
+                llama_batch_free(vbatch);
+                fprintf(stderr, "Verify decode failed\n");
+                break;
+            }
+            llama_batch_free(vbatch);
+
+            // Check acceptance
+            int accepted = 0;
+            for (size_t i = 0; i < draft_tokens.size(); i++) {
+                const float * vlogits = llama_get_logits_ith(ctx, i);
+                llama_token target_choice = 0;
+                float best_val = vlogits[0];
+                for (int32_t j = 1; j < vocab_size; j++) {
+                    if (vlogits[j] > best_val) {
+                        best_val = vlogits[j];
+                        target_choice = j;
+                    }
+                }
+                if (target_choice == draft_tokens[i]) {
+                    accepted++;
+                } else {
+                    break;
+                }
+            }
+            total_accepted += accepted;
+
+            // Commit accepted tokens: first token + accepted drafts
+            for (int i = 0; i <= accepted; i++) {
+                if ((int)generated.size() >= args.n_predict) break;
+                generated.push_back(i == 0 ? next_token : draft_tokens[i-1]);
+            }
+            
+            // Update sequence position: we committed accepted+1 tokens
+            n_past += accepted + 1;
+            
+            // Get target's choice after last accepted
+            const float * last_logits = llama_get_logits_ith(ctx, accepted);
+            next_token = 0;
+            max_logit = last_logits[0];
+            for (int32_t i = 1; i < vocab_size; i++) {
+                if (last_logits[i] > max_logit) {
+                    max_logit = last_logits[i];
+                    next_token = i;
+                }
+            }
+        }
+
+        // Check for EOS
+        if (next_token == llama_vocab_eot(vocab)) break;
+    }
+
+    auto t_end = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(t_end - t_start).count();
+    double tok_per_sec = generated.size() / elapsed;
+
+    // Print results
+    std::string output = common_detokenize(ctx, generated);
+    fprintf(stderr, "\n=== DFlash-AR Results ===\n");
+    fprintf(stderr, "Generated: %ld tokens in %.2fs\n", generated.size(), elapsed);
+    fprintf(stderr, "Speed: %.2f tok/s\n", tok_per_sec);
+    if (total_draft > 0) {
+        fprintf(stderr, "Draft acceptance rate: %.1f%% (%lld/%lld)\n",
+                100.0 * total_accepted / total_draft, (long long)total_accepted, (long long)total_draft);
+    }
+    fprintf(stderr, "\nOutput:\n%s\n", output.c_str());
+
+    // Cleanup
+    if (draft_ctx) llama_free(draft_ctx);
+    if (draft_model) llama_model_free(draft_model);
+    llama_free(ctx);
+    llama_model_free(model);
+    return 0;
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+int main(int argc, char ** argv) {
+    dflash_cli_args args;
+
+    // Parse CLI args
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if ((arg == "-m" || arg == "--model") && i + 1 < argc) {
+            args.model_path = argv[++i];
+        } else if ((arg == "-md" || arg == "--model-draft") && i + 1 < argc) {
+            args.draft_model_path = argv[++i];
+        } else if (arg == "--dflash-draft" && i + 1 < argc) {
+            args.dflash_draft_path = argv[++i];
+        } else if ((arg == "-p" || arg == "--prompt") && i + 1 < argc) {
+            args.prompt = argv[++i];
+        } else if ((arg == "-n" || arg == "--n-predict") && i + 1 < argc) {
+            args.n_predict = atoi(argv[++i]);
+        } else if ((arg == "-c" || arg == "--ctx-size") && i + 1 < argc) {
+            args.n_ctx = atoi(argv[++i]);
+        } else if (arg == "-ngl" && i + 1 < argc) {
+            args.n_gpu_layers = atoi(argv[++i]);
+        } else if (arg == "--seed" && i + 1 < argc) {
+            args.seed = atoi(argv[++i]);
+        } else if (arg == "--dflash") {
+            args.mode = dflash_cli_args::DFLASH_BLOCK;
+        } else if (arg == "--dflash-ar") {
+            args.mode = dflash_cli_args::DFLASH_AR;
+        } else if (arg == "--baseline") {
+            args.mode = dflash_cli_args::BASELINE;
+        } else if (arg == "--block-size" && i + 1 < argc) {
+            args.block_size = atoi(argv[++i]);
+        } else if (arg == "--moe-mode" && i + 1 < argc) {
+            args.moe_mode = argv[++i];
+        } else if (arg == "--moe-topk" && i + 1 < argc) {
+            args.moe_topk = atoi(argv[++i]);
+        } else if (arg == "-h" || arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        }
+    }
+
+    if (args.model_path.empty()) {
+        fprintf(stderr, "Error: model path required (-m)\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (args.prompt.empty()) {
+        args.prompt = "The capital of Portugal is";
+    }
+
+    fprintf(stderr, "DFlash CLI - Block Diffusion Speculative Decoding\n");
+    fprintf(stderr, "Model: %s\n", args.model_path.c_str());
+    fprintf(stderr, "Mode: %s\n", args.mode == dflash_cli_args::BASELINE ? "baseline" :
+                              args.mode == dflash_cli_args::DFLASH_AR ? "DFlash-AR" : "DFlash-block");
+
+    switch (args.mode) {
+        case dflash_cli_args::BASELINE:
+            return run_baseline(args);
+        case dflash_cli_args::DFLASH_AR:
+            return run_dflash_ar(args);
+        case dflash_cli_args::DFLASH_BLOCK:
+            return run_dflash(args);
+    }
+
+    return 0;
+}

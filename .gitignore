@@ -1,13 +1,63 @@
+# ── Build artifacts ────────────────────────────────────────────────────────────
 build/
+build-nsg-opt/
+build-turbo/
+build-coreml-check/
+build-verify-*/
 *.o
 *.a
 *.so
 *.dylib
-*.log
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
 .DS_Store
-results/
-benchmarks/output/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Binary model / data artifacts ──────────────────────────────────────────────
+*.gguf
+*.bin
+*.npz
+*.npy
+*.safetensors
+
+# ── Raw run logs (keep .md/.json/.tsv summaries) ───────────────────────────────
+results/*.log
+results/*.pid
+results/*.raw.txt
+results/*.txt
+results/phase0_live.log
+results/phase0_launcher.log
+results/topk_sweep_*/
+results/baseline_20260427_reanchor/
+
+# ── Large reference / vendor trees ─────────────────────────────────────────────
+papers:references:repos/
+ANE project_archive_20260404_134904/
+vendor/anemll-flash-llama.cpp/
+vendor/llama-cpp-turboquant/
+
+# ── Internal Claude Code session data ──────────────────────────────────────────
+.claude/
+
+# ── Vendor build caches ─────────────────────────────────────────────────────────
 vendor/anemll-flash-llama.cpp/build/
 vendor/anemll-flash-llama.cpp/build-*/
 vendor/anemll-flash-llama.cpp/flashmoe-results/
 vendor/anemll-flash-llama.cpp/.cache/
+
+# ── EvoDistill runtime artifacts ───────────────────────────────────────────────
+evodistill/adapters/
+evodistill/adapters_test/
+evodistill/corpus/corpus.jsonl
+evodistill/runs/*.npz
+
+# ── War room binaries and raw agent logs ───────────────────────────────────────
+war_room/artifacts/*.bin
+war_room/logs/
+
+# ── Duplicate root-level copies (canonical versions live in docs/foundation/) ──
+/ANE TurboStream Master Plan.docx
+/ANE TurboStream Master Plan.extracted.txt
+/EOF

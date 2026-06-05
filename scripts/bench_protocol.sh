@@ -6,21 +6,35 @@
 # This script enforces the §4 Track 0 reproducibility gate.
 # No tok/s number is valid outside this protocol.
 
-set -uo pipefail
+set -euo pipefail
 
 # --- Configuration ---
 MODEL="${MODEL:-$HOME/models/Qwen3.5-35B-A3B-UD-IQ2_M.gguf}"
 LLAMA_BENCH="${LLAMA_BENCH:-$HOME/Desktop/ANE project/build-nsg-opt/bin/llama-bench}"
 LLAMA_CLI="${LLAMA_CLI:-$HOME/Desktop/ANE project/build-nsg-opt/bin/llama-cli}"
 PROMPT_SET="${PROMPT_SET:-$HOME/Desktop/ANE project/scripts/prompt_set.txt}"
-RESULTS_DIR="${RESULTS_DIR:-$HOME/Desktop/ANE project/results/baseline_20260425}"
+RESULTS_DIR="${RESULTS_DIR:-$HOME/Desktop/ANE project/results/baseline_$(date +%Y%m%d)}"
+RUNS="${RUNS:-3}"
 SEED=42
 TEMP=0.0
 N_PREDICT=128
-N_WARMUP=30
+N_PROMPT=512
+N_WARMUP="${N_WARMUP:-30}"
+BENCH_BATCH="${BENCH_BATCH:-2048}"
+BENCH_UBATCH="${BENCH_UBATCH:-}"
+CLI_BATCH="${CLI_BATCH:-512}"
+CLI_UBATCH="${CLI_UBATCH:-128}"
+
+# Keep the dormant CoreML scaffold out of official non-ANE baselines. Track 2
+# can opt in explicitly with GGML_COREML_ENABLE=1.
+export GGML_COREML_ENABLE="${GGML_COREML_ENABLE:-0}"
 
 # Flags derived from current daily driver
-BASE_FLAGS=(-ngl 99 -t 4 --temp 0 --reasoning off -ub 128 -b 512 --seed "$SEED" -n "$N_PREDICT")
+BENCH_BASE_FLAGS=(-ngl 99 -t 4 -b "$BENCH_BATCH" -p "$N_PROMPT" -n "$N_PREDICT")
+if [[ -n "$BENCH_UBATCH" ]]; then
+    BENCH_BASE_FLAGS+=(-ub "$BENCH_UBATCH")
+fi
+CLI_BASE_FLAGS=(-ngl 99 -t 4 --temp "$TEMP" --reasoning off -ub "$CLI_UBATCH" -b "$CLI_BATCH" --seed "$SEED" -st)
 
 if [[ ! -x "$LLAMA_BENCH" ]]; then
     echo "ERROR: llama-bench not found at $LLAMA_BENCH" >&2
@@ -59,14 +73,18 @@ run_config() {
     local run_dir="$RESULTS_DIR/$label"
     mkdir -p "$run_dir"
 
-    for run in 1 2 3; do
-        log "  $label run $run/3 ..."
+    for run in $(seq 1 "$RUNS"); do
+        log "  $label run $run/$RUNS ..."
 
-        # Warm-up: 30 s generation, discarded
+        # Warm-up generation, discarded. Use llama-bench here so the benchmark
+        # protocol cannot accidentally enter an interactive chat loop.
         log "    Warm-up (discarded) ..."
-        "$LLAMA_CLI" -m "$MODEL" "${BASE_FLAGS[@]}" -ub 128 -b 512 --moe-mode stock --moe-topk 4 \
-            -p "Lisbon is the capital of Portugal. It is a beautiful city on the Atlantic coast." \
-            --no-display-prompt 2>/dev/null >/dev/null &
+        local warmup_flags=(-m "$MODEL" -ngl 99 -t 4 -b "$BENCH_BATCH" -p 0 -n 128)
+        if [[ -n "$BENCH_UBATCH" ]]; then
+            warmup_flags+=(-ub "$BENCH_UBATCH")
+        fi
+        "$LLAMA_BENCH" "${warmup_flags[@]}" \
+            --moe-mode stock --moe-topk 4 --output json 2>/dev/null >/dev/null &
         local wp=$!
         sleep $N_WARMUP
         kill $wp 2>/dev/null || true
@@ -77,8 +95,8 @@ run_config() {
 
         # Actual benchmark run
         local out="$run_dir/run${run}.json"
-        "$LLAMA_BENCH" -m "$MODEL" "${BASE_FLAGS[@]}" "${flags[@]}" \
-            --json 2>/dev/null | tee "$out" 2>&1
+        "$LLAMA_BENCH" -m "$MODEL" "${BENCH_BASE_FLAGS[@]}" "${flags[@]}" \
+            --output json 2>/dev/null | tee "$out" 2>&1
 
         # Power snapshot after
         snapshot_power "$run_dir/run${run}_power.txt"
@@ -102,7 +120,7 @@ run_quality_gate() {
     local i=1
     for p in "$p1" "$p2" "$p3"; do
         log "  Gate prompt $i/3 ..."
-        "$LLAMA_CLI" -m "$MODEL" "${BASE_FLAGS[@]}" "${flags[@]}" \
+        "$LLAMA_CLI" -m "$MODEL" "${CLI_BASE_FLAGS[@]}" "${flags[@]}" \
             -p "$p" -n 64 --no-display-prompt \
             2>/dev/null | tee "$gate_dir/prompt${i}_output.txt"
         ((i++))
@@ -126,7 +144,7 @@ run_config "topk4" --moe-mode stock --moe-topk 4
 run_quality_gate "topk4" --moe-mode stock --moe-topk 4
 
 # 3. shared-only (upper bound, no routed experts)
-run_config "shared_only" --moe-mode shared-only
-run_quality_gate "shared_only" --moe-mode shared-only
+run_config "shared_only" --moe-mode stock --moe-shared-only 1
+run_quality_gate "shared_only" --moe-mode stock --moe-shared-only
 
 log "Baseline protocol complete. Results in $RESULTS_DIR"

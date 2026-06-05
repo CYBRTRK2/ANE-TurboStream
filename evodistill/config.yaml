@@ -1,0 +1,64 @@
+# EvoDistill Configuration — Phase 5
+# Per Master Plan + EGGROLL (@rustane_dev) + SSD (Apple Research, arXiv 2604.01193)
+
+inference:
+  engine: "llama.cpp"  # anemll-flash-llama.cpp for corpus generation
+  binary: "/Users/manuelmonteiro/Desktop/ANE project/vendor/anemll-flash-llama.cpp/build/bin/llama-completion"
+  model: "/Users/manuelmonteiro/models/Qwen3.5-35B-A3B-UD-IQ2_M.gguf"
+  cache_type_k: "q4_0"
+  ngl: 99
+  hardware: "M4 MacBook Air 16GB"
+
+# E1: Corpus Generation (SSD Stage 1)
+corpus:
+  n_prompts: 50        # start with 50 for faster iteration
+  n_samples: 4         # samples per prompt at T_train
+  t_train: 0.9         # SSD: sample at T > 1 would be too noisy; 0.9 per EGGROLL findings
+  max_tokens: 256       # max tokens per sample (faster)
+  output_dir: "evodistill/corpus"
+  prompts_source: "livecodebench_v6"  # from ml-ssd dataset
+
+# E2: ES Optimizer (EGGROLL algorithm, credit: @rustane_dev)
+es_optimizer:
+  # LoRA config
+  lora_rank: 8
+  lora_alpha: 16
+  # Qwen3.5-MoE has 10 attention layers (3,7,11,15,19,23,27,31,35,39)
+  # Other 30 layers are SSM with fused attn_qkv (not LoRA-compatible)
+  target_layers: 10    # 10 attention layers with separate Q/K/V/O
+  # ES config
+  population: 8        # P=8, antithetic pairs (4 positive + 4 negative) — reduced for 16GB
+  sigma: 0.01          # perturbation scale
+  alpha: 0.01          # learning rate
+  n_steps: 50          # S=50 ES steps (reduced from 200 for 16GB memory)
+  # Memory constraints
+  max_memory_gb: 14.0  # leave 2GB for system on 16GB machine
+  # ANE acceleration (Phase 4 revisit findings)
+  use_ane: true
+  ane_forward_pass: true  # Use ANE private API for conv/attention forward passes
+  ane_hybrid: true       # Conv on ANE, GEMM on CPU (ANE is 3.5x faster for conv)
+  ane_api_path: "/tmp/ane_pathb_v7"  # Working private API POC binary
+  
+# E3: Temperature Calibration (SSD Stage 3)
+temp_calibration:
+  t_values: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  val_ratio: 0.1       # 10% of corpus for validation
+
+# E4: Iterative Loop (EvoDistill Stage 4)
+iterative:
+  n_rounds: 3          # K=3 rounds
+
+# E5: Evaluation
+evaluation:
+  harness: "livecodebench_v6"
+  pass_at_k: 1         # primary metric
+  min_improvement_pp: 3 # must exceed frozen baseline by >=3pp
+
+# Attribution
+attribution:
+  ssd: "Apple Research (arXiv 2604.01193) — Self-distillation training signal"
+  eggroll: "@rustane_dev (March 2026) — ES+LoRA gradient-free optimizer"
+  livecodebench: "Apple Research ml-ssd repo — LiveCodeBench V6 evaluation"
+  ane_api: "apple-silicon-internals repo — ANE private API access"
+  inference: "llama.cpp anemll-flash-llama.cpp fork — inference engine"
+  turboquant: "turboquant_plus repo — WHT rotation, QJL compression"
